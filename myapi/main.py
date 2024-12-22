@@ -1,94 +1,90 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
-import pandas as pd
-import random
-from datetime import datetime
+from fastapi.responses import FileResponse
+import sqlite3
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
 
 app = FastAPI()
 
-# 1. 날씨 데이터 생성
-def generate_weather_data():
-    cities = ["서울", "부산", "대구", "인천", "광주", "대전", "울산", "수원", "제주", "청주", "춘천"]
-    weather_conditions = ["맑음", "구름 많음", "비", "눈", "흐림", "바람"]
+# 데이터베이스 초기화
+def init_db():
+    conn = sqlite3.connect("schedule.db")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schedule (
+            id INTEGER PRIMARY KEY,
+            title TEXT,
+            date TEXT,
+            description TEXT
+        )
+    """)
+    conn.close()
 
-    data = []
-    for city in cities:
-        temperature = round(random.uniform(-5, 35), 1)  # -5도에서 35도 사이
-        humidity = random.randint(30, 90)  # 30%에서 90% 사이
-        wind_speed = round(random.uniform(0, 15), 1)  # 0 ~ 15m/s
-        condition = random.choice(weather_conditions)
+init_db()
 
-        # 날씨 상태 아이콘 매칭
-        match condition:
-            case "맑음":
-                icon = "☀️"
-            case "구름 많음":
-                icon = "☁️"
-            case "비":
-                icon = "🌧️"
-            case "눈":
-                icon = "❄️"
-            case "흐림":
-                icon = "🌥️"
-            case "바람":
-                icon = "💨"
-            case _:
-                icon = "❓"
-
-        data.append({
-            "도시": city,
-            "온도 (°C)": temperature,
-            "습도 (%)": humidity,
-            "풍속 (m/s)": wind_speed,
-            "날씨": f"{condition} {icon}"  # 날씨 상태와 아이콘 결합
-        })
-
-    return pd.DataFrame(data)
-
-# 2. FastAPI 엔드포인트 작성하기
+# 메인 페이지: 일정 조회
 @app.get("/", response_class=HTMLResponse)
-async def show_weather():
-    df = generate_weather_data()
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # HTML 테이블로 변환
-    table_html = df.to_html(index=False, escape=False, justify="center", border=1)
+def read_schedule():
+    conn = sqlite3.connect("schedule.db")
+    schedules = conn.execute("SELECT title, date, description FROM schedule").fetchall()
+    conn.close()
 
-    # HTML 페이지 생성
-    html_content = f"""
-    <html>
-        <head>
-            <title>대한민국 주요 도시 날씨</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; text-align: center; background-color: #f9f9f9; }}
-                table {{ margin: 20px auto; border-collapse: collapse; width: 90%; }}
-                th, td {{ padding: 10px; border: 1px solid #ddd; text-align: center; }}
-                th {{ background-color: #f4f4f4; color: #333; }}
-                td {{ font-size: 14px; }}
-                .refresh-btn {{
-                    display: inline-block;
-                    margin: 20px;
-                    padding: 10px 20px;
-                    font-size: 16px;
-                    color: white;
-                    background-color: #007BFF;
-                    border: none;
-                    border-radius: 5px;
-                    cursor: pointer;
-                    text-decoration: none;
-                }}
-                .refresh-btn:hover {{
-                    background-color: #0056b3;
-                }}
-                .timestamp {{ font-size: 14px; color: #555; }}
-            </style>
-        </head>
-        <body>
-            <h1>대한민국 주요 도시 날씨 정보</h1>
-            <p class="timestamp">현재 시간: {current_time}</p>
-            <a href="/" class="refresh-btn">새로고침</a>
-            {table_html}
-        </body>
-    </html>
+    html = "<h1>일정 관리</h1><a href='/add'>일정 추가</a><br><a href='/chart'>가장 많은 일정 보기</a><ul>"
+    for title, date, description in schedules:
+        html += f"<li>{date} - {title} ({description})</li>"
+    html += "</ul>"
+    return html
+
+# 일정 추가 페이지
+@app.get("/add", response_class=HTMLResponse)
+def add_event_page():
+    return """
+    <h1>일정 추가</h1>
+    <form action="/add" method="post">
+        제목: <input type="text" name="title"><br>
+        날짜: <input type="date" name="date"><br>
+        설명: <input type="text" name="description"><br>
+        <button type="submit">추가</button>
+    </form>
+    <a href="/">메인으로</a>
     """
-    return HTMLResponse(content=html_content)
+
+# 일정 추가 처리
+@app.post("/add")
+def add_event(title: str = Form(...), date: str = Form(...), description: str = Form("")):
+    conn = sqlite3.connect("schedule.db")
+    conn.execute("INSERT INTO schedule (title, date, description) VALUES (?, ?, ?)", (title, date, description))
+    conn.commit()
+    conn.close()
+    return HTMLResponse("<h1>일정이 추가되었습니다!</h1><a href='/'>메인으로</a>")
+
+# 차트 생성 및 표시
+@app.get("/chart")
+def show_chart():
+    conn = sqlite3.connect("schedule.db")
+    data = conn.execute("SELECT date, COUNT(*) as count FROM schedule GROUP BY date ORDER BY count DESC").fetchall()
+    conn.close()
+
+    if not data:
+        return HTMLResponse("<h1>일정이 없습니다!</h1><a href='/'>메인으로</a>")
+
+    # 데이터 추출
+    dates = [row[0] for row in data]
+    counts = [row[1] for row in data]
+
+    # 차트 생성
+    plt.figure(figsize=(10, 5))
+    plt.bar(dates, counts, color='skyblue')
+    plt.xlabel("day")
+    plt.ylabel("day count")
+    plt.title("most day of iljung")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    # 차트 저장
+    chart_path = "schedule_chart.png"
+    plt.savefig(chart_path)
+    plt.close()
+
+    return FileResponse(chart_path)
